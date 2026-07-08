@@ -62,4 +62,14 @@ public class RouteConfig {
     public Map<String, String> getErrorPages() {
         return errorPages;
     }
+
+    @Override
+    public String toString() {
+        return "RouteConfig{path=" + path
+                + ", root=" + root
+                + ", methods=" + methods
+                + ", cgi=" + cgi_extensions
+                + ", redirect=" + redirect
+                + "}";
+    }
 }

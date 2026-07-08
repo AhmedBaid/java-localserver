@@ -8,7 +8,7 @@ import java.util.Map;
 public class ResponseBuilder {
 
     public static HttpResponse build(HttpRequest request, RouteConfig route) {
-        System.out.println("Building response for request: " + request.getMethod() + " " + request.getPath() + " " + request.getHeaders());
+        System.out.println("Building response for: " + request.toDebugString());
         HttpResponse response = new HttpResponse();
 
         if (route == null) {

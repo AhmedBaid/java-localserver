@@ -211,6 +211,7 @@ public class HttpRequest {
         }
         return null;
     }
+
     private String extractContentDispositionParam(String headers, String paramName) {
         for (String line : headers.split("\r\n")) {
             if (line.toLowerCase().startsWith("content-disposition:")) {
@@ -255,4 +256,44 @@ public class HttpRequest {
         }
         return -1;
     }
+
+    /**
+     * Compact, single-line, human-readable summary of the request.
+     * e.g. GET /cgi/test.py?name=Ahmed HTTP/1.1 | headers=3 | body=0B
+     * Meant for logging -- use {@link #toDebugString()} when you need the
+     * full header dump.
+     */
+    @Override
+    public String toString() {
+        int bodyLen = body != null ? body.length : 0;
+        return String.format("%s %s %s | headers=%d | body=%dB",
+                method, path, version, headers.size(), bodyLen);
+    }
+
+    /**
+     * Multi-line dump of the request, including every header on its own
+     * line, indented like a raw HTTP request. Useful when {@link #toString()}
+     * isn't enough detail (e.g. debugging a specific header value).
+     */
+    public String toDebugString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append(method).append(' ').append(path).append(' ').append(version).append('\n');
+
+        headers.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey(String.CASE_INSENSITIVE_ORDER))
+                .forEach(e -> sb.append("  ").append(e.getKey()).append(": ").append(e.getValue()).append('\n'));
+
+        int bodyLen = body != null ? body.length : 0;
+        sb.append("  [body: ").append(bodyLen).append(" bytes]");
+
+        if (!uploadedFiles.isEmpty()) {
+            sb.append('\n').append("  [uploadedFiles: ").append(uploadedFiles.keySet()).append(']');
+        }
+        if (!formFields.isEmpty()) {
+            sb.append('\n').append("  [formFields: ").append(formFields.keySet()).append(']');
+        }
+
+        return sb.toString();
+    }
+
 }

@@ -115,7 +115,7 @@ public class Server {
         buffer.get(data);
         state.buffer.write(data);
         byte[] allDataSoFar = state.buffer.toByteArray();
-        System.out.println("Received data: " + new String(allDataSoFar));
+        System.out.println("Received " + bytesRead + " bytes (buffered total: " + allDataSoFar.length + ")");
 
         if (!state.isHeadersParsed) {
             int headerEnd = RequestParser.findHeaderEndIndex(allDataSoFar);
@@ -129,6 +129,7 @@ public class Server {
                     state.isHeadersParsed = true;
 
                     state.matchedRoute = Router.matchRoute(state.request.getPath(), routeConfigs);
+                    System.out.println("Matched route: " + state.matchedRoute);
                     checkBodyLimit(state);
                 }
             }
@@ -181,7 +182,8 @@ public class Server {
             long contentLength = Long.parseLong(contentLengthStr);
             long limit = Reqlimit;
             if (state.matchedRoute != null) {
-                limit = state.matchedRoute.getClientBodyLimit()== null ? Reqlimit : state.matchedRoute.getClientBodyLimit();
+                limit = state.matchedRoute.getClientBodyLimit() == null ? Reqlimit
+                        : state.matchedRoute.getClientBodyLimit();
             }
             if (contentLength > limit) {
                 System.err.println("Payload Too Large! Limit: " + limit + ", Requested: " + contentLength);
@@ -201,7 +203,6 @@ public class Server {
             int currentBodySize = allDataSoFar.length - state.headerLength;
 
             if (currentBodySize >= expectedBodySize) {
-                System.out.println("*****************************" + contentLengthStr);
                 state.isRequestComplete = true;
 
                 byte[] completeBody = Arrays.copyOfRange(allDataSoFar, state.headerLength, allDataSoFar.length);
