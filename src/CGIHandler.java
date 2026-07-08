@@ -5,8 +5,9 @@ import utils.HttpResponse;
 
 public class CGIHandler {
 
-    public static HttpResponse handle(File scriptFile) throws Exception {
+    public static HttpResponse handle(File scriptFile, String queryString) throws Exception {
         ProcessBuilder builder = new ProcessBuilder("python3", scriptFile.getAbsolutePath());
+        builder.environment().put("QUERY_STRING", queryString != null ? queryString : "");
         Process process = builder.start();
 
         InputStream in = process.getInputStream();

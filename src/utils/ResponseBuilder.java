@@ -7,7 +7,7 @@ import java.util.Map;
 
 public class ResponseBuilder {
 
-        public static CgiExecutor cgiExecutor;
+    public static CgiExecutor cgiExecutor;
 
     public static HttpResponse build(HttpRequest request, RouteConfig route) {
         System.out.println("Building response for: " + request);
@@ -55,10 +55,9 @@ public class ResponseBuilder {
             return buildErrorResponse(500, "Internal Server Error", route.getErrorPages());
         }
 
-        // This just proves ProcessBuilder + stdout-as-response-body works end to end.
         if (isCgiRequest(route, targetFile)) {
             try {
-                return cgiExecutor.handle(targetFile);
+                return cgiExecutor.handle(targetFile, queryString);
             } catch (Exception e) {
                 return buildErrorResponse(500, "Internal Server Error", route.getErrorPages());
             }

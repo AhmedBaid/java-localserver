@@ -3,5 +3,5 @@ package utils;
 import java.io.File;
 
 public interface CgiExecutor {
-    HttpResponse handle(File scriptFile) throws Exception;
+    HttpResponse handle(File scriptFile, String queryString) throws Exception;
 }
