@@ -1,3 +1,4 @@
+clear
 rm -rf out
 mkdir out
 

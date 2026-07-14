@@ -86,29 +86,35 @@ public class Server {
     }
 
     private void readRequest(SelectionKey key, ByteBuffer buffer) throws IOException {
-            // 4. Read the client request
-            SocketChannel client = (SocketChannel) key.channel();
-            buffer.clear();
-            int bytesRead = client.read(buffer);
+        SocketChannel client = (SocketChannel) key.channel();
+        buffer.clear();
+        int bytesRead = client.read(buffer);
 
-            if (bytesRead == -1) {
-                client.close();
-                return;
-            }
-
-            buffer.flip(); // Prepare buffer for reading
-
-            // Print received data
-            byte[] data = new byte[buffer.limit()];
-            buffer.get(data);
-            System.out.println("Received: " + new String(data).trim());
-
-            // 5. Send the response back
-            buffer.rewind(); // Rewind to write the same data back
-            client.write(buffer);
-
-            // Close the client channel after responding
+        if (bytesRead == -1) {
             client.close();
+            return;
+        }
+
+        buffer.flip();
+        byte[] data = new byte[buffer.limit()];
+        buffer.get(data);
+        String requestString = new String(data).trim();
+        
+        System.out.println("Received:\n" + requestString);
+
+        // 1. استخراج السطر الأول من الطلب (مثال: GET / HTTP/1.1)
+        String[] lines = requestString.split("\r\n");
+        if (lines.length > 0) {
+            String[] requestLine = lines[0].split(" ");
+            // التأكد من أن السطر يحتوي على Method و Path و Protocol
+            if (requestLine.length == 3) {
+                String method = requestLine[0]; // GET
+                String path = requestLine[1]; // / أو /about
+
+                // 2. توجيه الطلب (Routing)
+                handleRoute(client, path);
+            }
+        }
     }
 
     private void sendResponse(SelectionKey key) throws IOException {
@@ -124,5 +130,41 @@ public class Server {
             // Switch interest back to reading new requests from this client
             key.interestOps(SelectionKey.OP_READ);
         }
+    }
+
+    private void handleRoute(SocketChannel client, String path) throws IOException {
+        String responseBody = "";
+        int statusCode = 200;
+        String statusMessage = "OK";
+
+        // تحديد المحتوى بناءً على المسار
+        if (path.equals("/")) {
+            // هنا يمكنك قراءة محتوى ملف index.html من المسار المحدد في config.json
+            responseBody = "<html><body><h1>Welcome Home!</h1><p>This is the default index page.</p></body></html>";
+        } else if (path.equals("/about")) {
+            responseBody = "<html><body><h1>About Us</h1><p>ahmed's Custom Java Server</p></body></html>";
+        } else {
+            statusCode = 404;
+            statusMessage = "Not Found";
+            responseBody = "<html><body><h1>404 - Page Not Found</h1></body></html>";
+        }
+
+        // 3. بناء استجابة HTTP قياسية (HTTP Response Format)
+        // يجب أن تفصل بـ \r\n بين الأسطر، وبسطرين فارغين \r\n\r\n قبل محتوى الـ Body
+        String httpResponse = "HTTP/1.1 " + statusCode + " " + statusMessage + "\r\n" +
+                "Content-Type: text/html; charset=UTF-8\r\n" +
+                "Content-Length: " + responseBody.getBytes().length + "\r\n" +
+                "Connection: close\r\n" +
+                "\r\n" +
+                responseBody;
+
+        // إرسال الاستجابة للمتصفح
+        ByteBuffer responseBuffer = ByteBuffer.wrap(httpResponse.getBytes());
+        while (responseBuffer.hasRemaining()) {
+            client.write(responseBuffer);
+        }
+
+        // إغلاق الاتصال بعد إرسال الرد
+        client.close();
     }
 }
