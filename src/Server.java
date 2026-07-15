@@ -8,14 +8,21 @@ import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.List;
 
+import utils.HttpRequest;
+import utils.HttpResponse;
+import utils.RequestParser;
+import utils.ResponseBuilder;
+import utils.RouteConfig;
 import utils.ServerConfig;
 
 public class Server {
     private final List<ServerConfig> serverConfigs;
+    private List<RouteConfig> routeConfigs;
     private Selector selector;
 
     public Server(List<ServerConfig> serverConfigs) {
         this.serverConfigs = serverConfigs;
+        this.routeConfigs = new java.util.ArrayList<>();
     }
 
     public void start() throws IOException {
@@ -24,6 +31,7 @@ public class Server {
 
         // 2. Loop through every server block in your config
         for (ServerConfig config : serverConfigs) {
+            this.routeConfigs.addAll(config.getRoutes());
             String host = config.getHost();
 
             for (int port : config.getPorts()) {
@@ -111,20 +119,25 @@ public class Server {
         String requestString = new String(data).trim();
 
         System.out.println("Received:\n" + requestString);
-        HttpRequestParser.parseRequest(client, requestString);
+        HttpRequest httpRequest = RequestParser.parseRequest(data);
+        RouteConfig matchedRoute = Router.matchRoute(httpRequest.getPath(), routeConfigs);
+        HttpResponse response = ResponseBuilder.build(httpRequest, matchedRoute);
+
+        // HttpRequestParser.parseRequest(client, requestString);
+        ByteBuffer responseBuffer = response.toByteBuffer();
+        key.attach(responseBuffer);
+
+        key.interestOps(SelectionKey.OP_WRITE);
     }
 
     private void sendResponse(SelectionKey key) throws IOException {
         SocketChannel client = (SocketChannel) key.channel();
         ByteBuffer buffer = (ByteBuffer) key.attachment();
 
-        // Attempt to write the remaining bytes to the socket
         client.write(buffer);
 
-        // Check if there is still data to be sent (e.g., if the socket buffer got full)
         if (!buffer.hasRemaining()) {
             buffer.clear();
-            // Switch interest back to reading new requests from this client
             key.interestOps(SelectionKey.OP_READ);
         }
     }

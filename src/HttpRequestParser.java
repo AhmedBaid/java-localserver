@@ -76,7 +76,7 @@ public class HttpRequestParser {
                 System.out.println("Body parsed: [Empty]");
             }
 
-            Router.handleRoute(client, path);
+            // Router.handleRoute(client, path);
 
         } catch (Exception e) {
             System.err.println("Error parsing request: " + e.getMessage());
