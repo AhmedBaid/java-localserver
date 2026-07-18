@@ -15,7 +15,10 @@ public class RequestParser {
 
         String headerString = new String(headerBytes);
         HttpRequest httpRequest = new HttpRequest();
-        parseHeader(headerString, httpRequest);
+        boolean isValide = parseHeader(headerString, httpRequest);
+        if (!isValide) {
+            return null;
+        }
 
         int bodyStartIndex = headerEndIndex;
         if (bodyStartIndex < request.length) {
@@ -35,7 +38,7 @@ public class RequestParser {
         return -1;
     }
 
-    public static void parseHeader(String headerString, HttpRequest httpRequest) {
+    public static boolean parseHeader(String headerString, HttpRequest httpRequest) {
         String[] lines = headerString.split("\r\n");
         if (lines.length > 0) {
             String[] requestLineParts = lines[0].split(" ");
@@ -43,7 +46,11 @@ public class RequestParser {
                 httpRequest.setMethod(requestLineParts[0]);
                 httpRequest.setPath(requestLineParts[1]);
                 httpRequest.setVersion(requestLineParts[2]);
+            } else {
+                return false;
             }
+        } else {
+            return false;
         }
 
         for (int i = 1; i < lines.length; i++) {
@@ -55,5 +62,6 @@ public class RequestParser {
                 httpRequest.addHeader(key, value);
             }
         }
+        return true;
     }
 }

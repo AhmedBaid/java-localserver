@@ -10,8 +10,10 @@ public class Router {
 
         for (RouteConfig route : routes) {
             String routePath = route.getPath();
-
+            System.out.println(">>>>>>>>>" + routePath);
             if (requestPath.startsWith(routePath)) {
+                System.out.println("??????? request path: " + requestPath );
+                System.out.println("??????? route path" + route);
                 if (routePath.length() > longestMatch) {
                     longestMatch = routePath.length();
                     bestMatch = route;

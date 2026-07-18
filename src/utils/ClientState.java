@@ -13,4 +13,6 @@ public class ClientState {
     public boolean isError = false;
     public int headerLength = 0;
     public ByteBuffer responseBuffer = null;
+    public int errorCode = 0;
+    public String errorMessage = "";
 }
