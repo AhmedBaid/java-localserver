@@ -24,6 +24,7 @@ public class Server {
     private List<RouteConfig> routeConfigs;
     private Selector selector;
     private static final int Reqlimit = 5242880; // 5MB
+    private static final long IDLE_TIMEOUT_MILLIS = 30000;
 
     public Server(List<ServerConfig> serverConfigs) {
         this.serverConfigs = serverConfigs;
@@ -62,7 +63,10 @@ public class Server {
         ByteBuffer buffer = ByteBuffer.allocate(1024);
 
         while (true) {
-            selector.select();
+
+            selector.select(1000);
+
+            closeIdleConnections(selector);
 
             Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
 
@@ -92,7 +96,7 @@ public class Server {
                         }
 
                         if (state.tempFile != null && state.tempFile.exists()) {
-                            state.tempFile.delete(); 
+                            state.tempFile.delete();
                         }
                     }
                     key.cancel();
@@ -104,6 +108,45 @@ public class Server {
             }
 
         }
+    }
+
+    private void closeIdleConnections(Selector s) {
+        Long now = System.currentTimeMillis();
+        try {
+            Session.cleanupExpired();
+        } catch (Exception ignored) {
+        }
+
+        for (SelectionKey key : s.keys()) {
+            if (!key.isValid() || !(key.channel() instanceof SocketChannel)) {
+                continue;
+            }
+
+            ClientState state = (ClientState) key.attachment();
+            if (state != null) {
+                if (now - state.lastActivityMillis > IDLE_TIMEOUT_MILLIS) {
+                    System.out.println("Closing idle connection due to timeout...");
+                    try {
+                        if (state.fileChannel != null) {
+                            state.fileChannel.close();
+                        }
+                    } catch (Exception e) {
+                    }
+
+                    if (state.tempFile != null && state.tempFile.exists()) {
+                        state.tempFile.delete();
+                    }
+
+                    key.cancel();
+                    try {
+                        key.channel().close();
+                    } catch (IOException ignored) {
+                    }
+                }
+            }
+
+        }
+
     }
 
     private void acceptConnection(SelectionKey key) throws IOException {
@@ -128,6 +171,9 @@ public class Server {
         if (bytesRead == -1) {
             client.close();
             return;
+        }
+        if (state != null) {
+            state.lastActivityMillis = System.currentTimeMillis();
         }
 
         buffer.flip();
@@ -217,7 +263,7 @@ public class Server {
 
         if (state.responseBuffer != null) {
             client.write(state.responseBuffer);
-
+            state.lastActivityMillis = System.currentTimeMillis();
             if (!state.responseBuffer.hasRemaining()) {
                 key.attach(new ClientState());
                 key.interestOps(SelectionKey.OP_READ);

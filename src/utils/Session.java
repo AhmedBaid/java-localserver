@@ -1,4 +1,5 @@
 package utils;
+
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
@@ -6,12 +7,19 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class Session {
     private static final Map<String, Session> store = new ConcurrentHashMap<>();
-
-    public static final String COOKIE_NAME = "SESSID";
-
+    private static final long SESSION_TIMEOUT_MILLIS = 30 * 60 * 1000;
+public static final String COOKIE_NAME = "SESSID";
     /**
      * Create a new session, store it, and return it.
      */
+    public static void cleanupExpired() {
+        long now = System.currentTimeMillis();
+        store.entrySet().removeIf(entry -> {
+            Session s = entry.getValue();
+            return (now - s.lastAccessMillis) > SESSION_TIMEOUT_MILLIS;
+        });
+    }
+
     public static Session create() {
         Session s = new Session();
         store.put(s.getId(), s);
@@ -52,7 +60,7 @@ public class Session {
 
     public Session() {
         this.id = UUID.randomUUID().toString();
-        this.touch();
+        this.lastAccessMillis = System.currentTimeMillis();
     }
 
     public String getId() {
@@ -68,12 +76,9 @@ public class Session {
     }
 
     public void touch() {
-        this.lastAccessMillis = Instant.now().toEpochMilli();
+        this.lastAccessMillis = System.currentTimeMillis();
     }
 
-    /**
-     * Create a Cookie that carries this session's ID.
-     */
     public Cookie toCookie() {
         return new Cookie(COOKIE_NAME, id);
     }

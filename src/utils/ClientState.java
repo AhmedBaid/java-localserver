@@ -17,7 +17,7 @@ public class ClientState {
     public ByteBuffer responseBuffer = null;
     public int errorCode = 0;
     public String errorMessage = "";
-
+public long lastActivityMillis = System.currentTimeMillis();
     public File tempFile = null;
     public FileChannel fileChannel = null;
     public long bytesWritten = 0;
