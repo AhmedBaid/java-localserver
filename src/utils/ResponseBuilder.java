@@ -8,8 +8,6 @@ import java.util.Map;
 
 public class ResponseBuilder {
 
-    public static CgiExecutor cgiExecutor;
-
     public static HttpResponse build(HttpRequest request, RouteConfig route) {
         HttpResponse response = new HttpResponse();
 
@@ -59,11 +57,7 @@ public class ResponseBuilder {
             if (!"GET".equals(request.getMethod())) {
                 return buildErrorResponse(405, "Method Not Allowed", route.getErrorPages());
             }
-            try {
-                return cgiExecutor.handle(request, targetFile, fullPath, queryString);
-            } catch (Exception e) {
-                return buildErrorResponse(500, "Internal Server Error", route.getErrorPages());
-            }
+            return null;
         }
 
         if ("POST".equals(request.getMethod())) {
@@ -75,6 +69,41 @@ public class ResponseBuilder {
         }
 
         return handleGet(route, targetFile, relativePath);
+    }
+
+    public static File resolveTargetFile(HttpRequest request, RouteConfig route) {
+        String fullPath = request.getPath();
+        int qIdx = fullPath.indexOf('?');
+        if (qIdx != -1) {
+            fullPath = fullPath.substring(0, qIdx);
+        }
+        String relativePath = fullPath.substring(route.getPath().length());
+        if (!relativePath.startsWith("/")) {
+            relativePath = "/" + relativePath;
+        }
+        File targetFile = new File(route.getRoot() + relativePath);
+        try {
+            File rootDir = new File(route.getRoot()).getCanonicalFile();
+            File resolved = targetFile.getCanonicalFile();
+            if (!resolved.getPath().startsWith(rootDir.getPath())) {
+                return null;
+            }
+            return resolved;
+        } catch (java.io.IOException e) {
+            return null;
+        }
+    }
+
+    public static String extractQueryString(HttpRequest request) {
+        String path = request.getPath();
+        int qIdx = path.indexOf('?');
+        return qIdx != -1 ? path.substring(qIdx + 1) : "";
+    }
+
+    public static String extractScriptPath(HttpRequest request) {
+        String path = request.getPath();
+        int qIdx = path.indexOf('?');
+        return qIdx != -1 ? path.substring(0, qIdx) : path;
     }
 
     private static boolean isCgiRequest(RouteConfig route, File targetFile) {

@@ -22,4 +22,5 @@ public class ClientState {
     public String errorMessage = "";
     public long lastActivityMillis = System.currentTimeMillis();
     public long bytesWritten = 0;
+    public boolean cgiPending = false;
 }

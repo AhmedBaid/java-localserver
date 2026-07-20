@@ -1,3 +1,4 @@
+import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
@@ -5,11 +6,13 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
+import utils.CgiState;
 import utils.ClientState;
 import utils.HttpRequest;
 import utils.HttpResponse;
@@ -27,6 +30,8 @@ public class Server {
     private static final int Reqlimit = 5242880; // 5MB
     private static final long IDLE_TIMEOUT_MILLIS = 30000;
 
+    private final List<CgiState> pendingCgiJobs = new ArrayList<>();
+
     public Server(List<ServerConfig> serverConfigs) {
         this.serverConfigs = serverConfigs;
         this.routeConfigs = new java.util.ArrayList<>();
@@ -35,32 +40,28 @@ public class Server {
     public void start() throws IOException {
         this.selector = Selector.open();
 
-        java.util.Set<String> boundAddresses = new java.util.HashSet<>();
-
         for (ServerConfig config : serverConfigs) {
+            this.routeConfigs.addAll(config.getRoutes());
             String host = config.getHost();
 
             for (int port : config.getPorts()) {
-                String bindKey = host + ":" + port;
-
-                if (boundAddresses.contains(bindKey)) {
-                    continue;
-                }
-
                 try {
                     ServerSocketChannel serverChannel = ServerSocketChannel.open();
+
                     serverChannel.configureBlocking(false);
                     serverChannel.bind(new InetSocketAddress(host, port));
+
                     serverChannel.register(selector, SelectionKey.OP_ACCEPT);
-                    boundAddresses.add(bindKey);
+
                     System.out.println("Started virtual server on " + host + ":" + port);
                 } catch (Exception e) {
                     System.err
                             .println("Failed to start virtual server on " + host + ":" + port + " - " + e.getMessage());
+                    continue;
                 }
             }
         }
-        System.out.println("All unique ports bound. Entering the event loop...");
+        System.out.println("All ports bound. Entering the event loop...");
         runEventLoop();
     }
 
@@ -69,9 +70,10 @@ public class Server {
 
         while (true) {
 
-            selector.select(1000);
+            selector.select(20);
 
             closeIdleConnections(selector);
+            pollPendingCgiJobs();
 
             Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
 
@@ -118,6 +120,46 @@ public class Server {
         }
     }
 
+    private void pollPendingCgiJobs() {
+        if (pendingCgiJobs.isEmpty()) {
+            return;
+        }
+        Iterator<CgiState> it = pendingCgiJobs.iterator();
+        while (it.hasNext()) {
+            CgiState cgiState = it.next();
+            try {
+                HttpResponse response = CGIHandler.pollCgi(cgiState);
+                if (response != null) {
+                    // Job finished or timed out -- build the response and re-arm
+                    ClientState clientState = cgiState.clientState;
+                    SelectionKey key = cgiState.key;
+
+                    if (clientState.request != null) {
+                        clientState.session = Session.fromRequest(clientState.request);
+                        if (clientState.session == null) {
+                            clientState.session = Session.create();
+                        } else {
+                            clientState.session.touch();
+                        }
+                        response.addSetCookie(clientState.session.toCookie());
+                    }
+
+                    clientState.responseBuffer = response.toByteBuffer();
+                    clientState.cgiPending = false;
+
+                    if (key.isValid()) {
+                        key.interestOps(SelectionKey.OP_WRITE);
+                        selector.wakeup();
+                    }
+                    it.remove();
+                }
+            } catch (Exception e) {
+                System.err.println("CGI poll error: " + e.getMessage());
+                it.remove();
+            }
+        }
+    }
+
     private void closeIdleConnections(Selector s) {
         Long now = System.currentTimeMillis();
         try {
@@ -132,6 +174,9 @@ public class Server {
 
             ClientState state = (ClientState) key.attachment();
             if (state != null) {
+                if (state.cgiPending) {
+                    continue;
+                }
                 if (now - state.lastActivityMillis > IDLE_TIMEOUT_MILLIS) {
                     System.out.println("Closing idle connection due to timeout...");
                     try {
@@ -203,10 +248,7 @@ public class Server {
                 if (parsedReq != null) {
                     state.request = parsedReq;
                     state.isHeadersParsed = true;
-                    int localPort = ((SocketChannel) key.channel()).socket().getLocalPort();
-                    String hostHeader = state.request.getHeader("Host");
-                    ServerConfig matchedServer = findMatchingServer(hostHeader, localPort);
-                    state.matchedRoute = Router.matchRoute(state.request.getPath(), matchedServer.getRoutes());
+                    state.matchedRoute = Router.matchRoute(state.request.getPath(), routeConfigs);
                     checkBodyLimit(state);
 
                     if (!state.isError) {
@@ -277,10 +319,33 @@ public class Server {
                     if (allData.length > state.headerLength) {
                         byte[] completeBody = Arrays.copyOfRange(allData, state.headerLength, allData.length);
                         state.request.setBody(completeBody);
-                        state.request.parseMultipartBody();
+                        state.request.parseMultipartBody(); 
                     }
                 }
                 response = ResponseBuilder.build(state.request, state.matchedRoute);
+
+                if (response == null) {
+                    File scriptFile = ResponseBuilder.resolveTargetFile(state.request, state.matchedRoute);
+                    String scriptPath = ResponseBuilder.extractScriptPath(state.request);
+                    String queryString = ResponseBuilder.extractQueryString(state.request);
+                    try {
+                        CgiState cgiState = CGIHandler.startCgi(
+                                state.request, scriptFile, scriptPath, queryString, key, state);
+                        if (cgiState == null) {
+                            // No interpreter configured for this extension -- 404
+                            response = ResponseBuilder.buildErrorResponse(404, "Not Found",
+                                    state.matchedRoute.getErrorPages());
+                        } else {
+                            state.cgiPending = true;
+                            key.interestOps(0); // park -- Selector ignores this socket until re-armed
+                            pendingCgiJobs.add(cgiState);
+                            return; // no response yet, come back when pollCgi() finishes the job
+                        }
+                    } catch (IOException e) {
+                        response = ResponseBuilder.buildErrorResponse(500, "Internal Server Error",
+                                state.matchedRoute.getErrorPages());
+                    }
+                }
             }
 
             if (state.request != null) {
@@ -375,34 +440,5 @@ public class Server {
         } else {
             state.isRequestComplete = true;
         }
-    }
-
-    private ServerConfig findMatchingServer(String hostHeader, int localPort) {
-        String requestedHost = hostHeader;
-        if (requestedHost != null && requestedHost.contains(":")) {
-            requestedHost = requestedHost.split(":")[0]; 
-        }
-
-        ServerConfig defaultServer = null;
-
-        for (ServerConfig config : serverConfigs) {
-            if (config.getPorts().contains(localPort)) {
-                
-                if (defaultServer == null) {
-                    defaultServer = config; 
-                }
-
-                String serverName = config.getServerName(); 
-                
-                if (requestedHost != null && serverName != null && requestedHost.equalsIgnoreCase(serverName)) {
-                    return config; 
-                }
-                
-                if (requestedHost != null && requestedHost.equalsIgnoreCase(config.getHost())) {
-                    return config;
-                }
-            }
-        }
-        return defaultServer;
     }
 }

@@ -2,34 +2,35 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.channels.SelectionKey;
 import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.Map;
+import utils.CgiState;
+import utils.ClientState;
 import utils.HttpRequest;
 import utils.HttpResponse;
 
 public class CGIHandler {
 
-    private static final long TIMEOUT_SECONDS = 10;
+    static final long TIMEOUT_MILLIS = 10_000L;
 
     private static final Map<String, String> INTERPRETERS = new HashMap<>();
     static {
         INTERPRETERS.put(".py", "python3");
         INTERPRETERS.put(".js", "node");
     }
-
     private static final String TEMP_FILE_HEADER = "Temp-File-Path";
 
-    public static HttpResponse handle(HttpRequest request, File scriptFile, String scriptPath, String queryString)
-            throws Exception {
+
+    public static CgiState startCgi(HttpRequest request, File scriptFile,
+            String scriptPath, String queryString,
+            SelectionKey key, ClientState clientState) throws IOException {
+
         String interpreter = interpreterFor(scriptFile.getName());
         if (interpreter == null) {
             System.err.println("No CGI interpreter configured for: " + scriptFile.getName());
-            HttpResponse notFound = new HttpResponse();
-            notFound.setStatusCode(404, "Not Found");
-            notFound.setHeader("Content-Type", "text/html; charset=UTF-8");
-            notFound.setBody(("<html><body><center><h1>404 Not Found</h1></center></body></html>").getBytes());
-            return notFound;
+            return null;
         }
 
         ProcessBuilder builder = new ProcessBuilder(interpreter, scriptFile.getAbsolutePath());
@@ -72,79 +73,70 @@ public class CGIHandler {
             if (header.getKey().equalsIgnoreCase(TEMP_FILE_HEADER)) {
                 continue;
             }
-            String key = "HTTP_" + header.getKey().toUpperCase().replace('-', '_');
-            env.put(key, header.getValue());
+            String k = "HTTP_" + header.getKey().toUpperCase().replace('-', '_');
+            env.put(k, header.getValue());
         }
 
         builder.redirectInput(stdinSourceFile);
 
-        Process process = null;
-        try {
-            process = builder.start();
+        Process process = builder.start();
+        long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
+        return new CgiState(process, process.getInputStream(), deadline,
+                key, clientState, stdinSourceFile, ownsStdinFile);
+    }
+    public static HttpResponse pollCgi(CgiState state) throws IOException {
+        InputStream in = state.stdout;
+        byte[] buf = new byte[4096];
 
-            byte[] outputBytes = readWithDeadline(process, process.getInputStream(), TIMEOUT_SECONDS * 1000L);
-            if (outputBytes == null) {
-                process.destroyForcibly();
-                throw new IOException(
-                        "CGI script timed out after " + TIMEOUT_SECONDS + "s: " + scriptFile.getPath());
+        if (System.currentTimeMillis() > state.deadlineMillis) {
+            state.process.destroyForcibly();
+            cleanup(state);
+            System.err.println("CGI script timed out: " + state.process);
+            return buildErrorResponse(500, "Internal Server Error - CGI Timeout");
+        }
+
+        int available = in.available();
+        if (available > 0) {
+            int n = in.read(buf, 0, Math.min(available, buf.length));
+            if (n > 0) {
+                state.outputBuffer.write(buf, 0, n);
+            }
+            return null; // more to come, check back next tick
+        }
+
+        if (!state.process.isAlive()) {
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                state.outputBuffer.write(buf, 0, n);
             }
 
-            int exitCode = process.exitValue();
+            int exitCode = state.process.exitValue();
+            cleanup(state);
+
             if (exitCode != 0) {
-                System.err.println("CGI script exited with code " + exitCode + ": " + scriptFile.getPath()
-                        + " (script's stderr, if any, was printed above)");
-                throw new IOException("CGI script exited with code " + exitCode + ": " + scriptFile.getPath());
+                System.err.println("CGI script exited with code " + exitCode);
+                return buildErrorResponse(500, "Internal Server Error - CGI Script Error");
             }
 
-            return parseCgiOutput(outputBytes);
+            return parseCgiOutput(state.outputBuffer.toByteArray());
+        }
 
-        } finally {
-            if (process != null && process.isAlive()) {
-                process.destroyForcibly();
-            }
-            if (ownsStdinFile) {
-                stdinSourceFile.delete();
-            }
+        return null;
+    }
+
+    private static void cleanup(CgiState state) {
+        if (state.ownsStdinFile && state.stdinSourceFile != null) {
+            state.stdinSourceFile.delete();
         }
     }
 
-    private static byte[] readWithDeadline(Process process, InputStream in, long timeoutMillis) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[4096];
-        long deadline = System.currentTimeMillis() + timeoutMillis;
-
-        while (true) {
-            if (System.currentTimeMillis() > deadline) {
-                return null;
-            }
-
-            int available = in.available();
-            if (available > 0) {
-                int n = in.read(buf, 0, Math.min(available, buf.length));
-                if (n == -1) {
-                    break;
-                }
-                out.write(buf, 0, n);
-                continue;
-            }
-
-            if (!process.isAlive()) {
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
-                }
-                break;
-            }
-
-            try {
-                Thread.sleep(20);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
-        }
-
-        return out.toByteArray();
+    private static HttpResponse buildErrorResponse(int code, String message) {
+        HttpResponse response = new HttpResponse();
+        response.setStatusCode(code, message);
+        response.setHeader("Content-Type", "text/html; charset=UTF-8");
+        response.setBody(("<html><body><center><h1>" + code + " " + message
+                + "</h1></center></body></html>").getBytes());
+        return response;
     }
 
     private static String interpreterFor(String fileName) {
@@ -155,7 +147,7 @@ public class CGIHandler {
         return INTERPRETERS.get(fileName.substring(dot).toLowerCase());
     }
 
-    private static HttpResponse parseCgiOutput(byte[] output) {
+    public static HttpResponse parseCgiOutput(byte[] output) {
         HttpResponse response = new HttpResponse();
 
         String raw = new String(output);
