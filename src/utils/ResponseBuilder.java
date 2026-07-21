@@ -241,7 +241,6 @@ public class ResponseBuilder {
         html.append("pre { line-height: 1.6; }\n");
         html.append("</style>\n</head>\n<body>\n");
 
-        html.append("<h1>Page Upload</h1>\n");
         html.append("<hr>\n<pre>\n");
 
         if (!relativePath.equals("/") && !relativePath.isEmpty()) {
