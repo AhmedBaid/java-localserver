@@ -70,8 +70,7 @@ public class Server {
 
         while (true) {
 
-            long selectTimeout = pendingCgiJobs.isEmpty() ? 1000 : 20;
-            selector.select(selectTimeout);
+            selector.select(20);
 
             closeIdleConnections(selector);
             pollPendingCgiJobs();
@@ -155,23 +154,6 @@ public class Server {
                 }
             } catch (Exception e) {
                 System.err.println("CGI poll error: " + e.getMessage());
-                ClientState clientState = cgiState.clientState;
-                SelectionKey key = cgiState.key;
-                try {
-                    HttpResponse err = CGIHandler.buildErrorResponse(500, "Internal Server Error");
-                    if (clientState.request != null) {
-                        clientState.session = Session.fromRequest(clientState.request);
-                        if (clientState.session == null) clientState.session = Session.create();
-                        err.addSetCookie(clientState.session.toCookie());
-                    }
-                    clientState.responseBuffer = err.toByteBuffer();
-                    clientState.cgiPending = false;
-                    if (key.isValid()) {
-                        key.interestOps(SelectionKey.OP_WRITE);
-                        selector.wakeup();
-                    }
-                } catch (Exception ignored) {
-                }
                 it.remove();
             }
         }
@@ -343,23 +325,41 @@ public class Server {
 
                 if (response == null) {
                     File scriptFile = ResponseBuilder.resolveTargetFile(state.request, state.matchedRoute);
-                    String scriptPath = ResponseBuilder.extractScriptPath(state.request);
-                    String queryString = ResponseBuilder.extractQueryString(state.request);
-                    try {
-                        CgiState cgiState = CGIHandler.startCgi(
-                                state.request, scriptFile, scriptPath, queryString, key, state);
-                        if (cgiState == null) {
+                    if (scriptFile != null && ResponseBuilder.isCgiFile(scriptFile, state.matchedRoute)) {
+                        String scriptPath = ResponseBuilder.extractScriptPath(state.request);
+                        String queryString = ResponseBuilder.extractQueryString(state.request);
+                        try {
+                            CgiState cgiState = CGIHandler.startCgi(
+                                    state.request, scriptFile, scriptPath, queryString, key, state);
+                            if (cgiState == null) {
+                                response = ResponseBuilder.buildErrorResponse(404, "Not Found",
+                                        state.matchedRoute.getErrorPages());
+                            } else {
+                                state.cgiPending = true;
+                                key.interestOps(0);
+                                pendingCgiJobs.add(cgiState);
+                                return;
+                            }
+                        } catch (IOException e) {
+                            response = ResponseBuilder.buildErrorResponse(500, "Internal Server Error",
+                                    state.matchedRoute.getErrorPages());
+                        }
+                    } else {
+                        File serveFile = ResponseBuilder.resolveServeFile(state.request, state.matchedRoute);
+                        if (serveFile == null) {
                             response = ResponseBuilder.buildErrorResponse(404, "Not Found",
                                     state.matchedRoute.getErrorPages());
                         } else {
-                            state.cgiPending = true;
-                            key.interestOps(0);
-                            pendingCgiJobs.add(cgiState);
-                            return;
+                            try {
+                                state.responseFileChannel = java.nio.channels.FileChannel.open(
+                                        serveFile.toPath(), java.nio.file.StandardOpenOption.READ);
+                                state.responseFileSize = serveFile.length();
+                                response = ResponseBuilder.buildFileStreamHeaders(serveFile);
+                            } catch (IOException e) {
+                                response = ResponseBuilder.buildErrorResponse(500, "Internal Server Error",
+                                        state.matchedRoute.getErrorPages());
+                            }
                         }
-                    } catch (IOException e) {
-                        response = ResponseBuilder.buildErrorResponse(500, "Internal Server Error",
-                                state.matchedRoute.getErrorPages());
                     }
                 }
             }
@@ -379,23 +379,50 @@ public class Server {
         }
     }
 
+    private static final int FILE_CHUNK_SIZE = 64 * 1024; // 64KB per OP_WRITE event
+
     private void sendResponse(SelectionKey key) throws IOException {
         SocketChannel client = (SocketChannel) key.channel();
         ClientState state = (ClientState) key.attachment();
+
+        if (state.responseFileChannel != null) {
+            if (state.responseBuffer != null && state.responseBuffer.hasRemaining()) {
+                client.write(state.responseBuffer);
+                state.lastActivityMillis = System.currentTimeMillis();
+                return; 
+            }
+
+            ByteBuffer chunk = ByteBuffer.allocate(FILE_CHUNK_SIZE);
+            int n = state.responseFileChannel.read(chunk);
+            if (n > 0) {
+                chunk.flip();
+                client.write(chunk);
+                state.lastActivityMillis = System.currentTimeMillis();
+            }
+
+            if (n == -1 || state.responseFileChannel.position() >= state.responseFileSize) {
+                try { state.responseFileChannel.close(); } catch (IOException ignored) {}
+                state.responseFileChannel = null;
+                if (state.tempFilePath != null) {
+                    try { java.nio.file.Files.deleteIfExists(state.tempFilePath); } catch (Exception ignored) {}
+                }
+                key.attach(new ClientState());
+                key.interestOps(SelectionKey.OP_READ);
+            }
+            return;
+        }
 
         if (state.responseBuffer != null) {
             client.write(state.responseBuffer);
             state.lastActivityMillis = System.currentTimeMillis();
 
             if (!state.responseBuffer.hasRemaining()) {
-
                 if (state.tempFilePath != null) {
                     try {
                         java.nio.file.Files.deleteIfExists(state.tempFilePath);
                     } catch (Exception e) {
                     }
                 }
-
                 key.attach(new ClientState());
                 key.interestOps(SelectionKey.OP_READ);
             }
@@ -457,5 +484,4 @@ public class Server {
             state.isRequestComplete = true;
         }
     }
-
 }

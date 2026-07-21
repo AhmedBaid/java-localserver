@@ -75,17 +75,27 @@ public class MultipartHandler {
                 if (originalFileName != null && !originalFileName.isEmpty()) {
                     String uniqueFileName = UUID.randomUUID().toString() + "_" + originalFileName;
                     Path finalPath = Paths.get(destinationDirectory, uniqueFileName);
-
-                    try (FileChannel destChannel = FileChannel.open(finalPath, StandardOpenOption.CREATE,
+                    
+                    Path partTemp = Files.createTempFile(
+                            Paths.get(destinationDirectory), "part_", ".tmp");
+                    try (FileChannel destChannel = FileChannel.open(partTemp,
                             StandardOpenOption.WRITE)) {
                         long remaining = dataSize;
                         long currentPos = dataStart;
-
                         while (remaining > 0) {
                             long transferred = sourceChannel.transferTo(currentPos, remaining, destChannel);
+                            if (transferred == 0) break;
                             currentPos += transferred;
                             remaining -= transferred;
                         }
+                    }
+                    try {
+                        Files.move(partTemp, finalPath,
+                                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    } catch (IOException e) {
+                        Files.move(partTemp, finalPath,
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                     }
                     System.out.println("Saved large file: " + uniqueFileName);
                     uploadedFiles.add(uniqueFileName);

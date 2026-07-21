@@ -8,6 +8,8 @@ import java.util.Map;
 
 public class ResponseBuilder {
 
+    private static final long FILE_STREAM_THRESHOLD = 2 * 1024 * 1024; // 2MB
+
     public static HttpResponse build(HttpRequest request, RouteConfig route) {
         HttpResponse response = new HttpResponse();
 
@@ -147,18 +149,59 @@ public class ResponseBuilder {
     }
 
     private static HttpResponse serveFile(File file) {
+        if (file.length() > FILE_STREAM_THRESHOLD) {
+            return null;
+        }
+
         HttpResponse response = new HttpResponse();
         try {
             byte[] fileContent = Files.readAllBytes(file.toPath());
             response.setBody(fileContent);
-
             String mimeType = MimeTypeUtil.getMimeType(file.getName());
             response.setHeader("Content-Type", mimeType);
-
             return response;
         } catch (IOException e) {
             return buildErrorResponse(500, "Internal Server Error", null);
         }
+    }
+
+    public static boolean isCgiFile(File targetFile, RouteConfig route) {
+        if (route.getCgiExtensions() == null || route.getCgiExtensions().isEmpty()) return false;
+        if (!targetFile.isFile()) return false;
+        String name = targetFile.getName();
+        int dot = name.lastIndexOf('.');
+        if (dot == -1) return false;
+        return route.getCgiExtensions().contains(name.substring(dot));
+    }
+
+    public static File resolveServeFile(HttpRequest request, RouteConfig route) {
+        String fullPath = request.getPath();
+        int qIdx = fullPath.indexOf('?');
+        if (qIdx != -1) fullPath = fullPath.substring(0, qIdx);
+        String relativePath = fullPath.substring(route.getPath().length());
+        if (!relativePath.startsWith("/")) relativePath = "/" + relativePath;
+
+        File targetFile = new File(route.getRoot() + relativePath);
+        try {
+            File rootDir = new File(route.getRoot()).getCanonicalFile();
+            File resolved = targetFile.getCanonicalFile();
+            if (!resolved.getPath().startsWith(rootDir.getPath())) return null;
+            // Handle default file for directories
+            if (resolved.isDirectory() && route.getDefaultFile() != null) {
+                File defaultFile = new File(resolved, route.getDefaultFile());
+                return (defaultFile.exists() && defaultFile.isFile()) ? defaultFile : null;
+            }
+            return (resolved.exists() && resolved.isFile()) ? resolved : null;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    public static HttpResponse buildFileStreamHeaders(File file) {
+        HttpResponse response = new HttpResponse();
+        response.setHeader("Content-Type", MimeTypeUtil.getMimeType(file.getName()));
+        response.setHeader("Content-Length", String.valueOf(file.length()));
+        return response;
     }
 
     private static HttpResponse generateDirectoryListing(File dir, String relativePath, RouteConfig route) {
@@ -324,12 +367,24 @@ public class ResponseBuilder {
                     Files.createDirectories(parentDir.toPath());
                 }
 
-                byte[] body = request.getBody();
-                if (body == null) {
-                    body = new byte[0];
+                String tempFilePathHeader = request.getHeader("Temp-File-Path");
+                if (tempFilePathHeader != null) {
+                    java.nio.file.Path src = java.nio.file.Paths.get(tempFilePathHeader);
+                    try {
+                        Files.move(src, targetFile.toPath(),
+                                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    } catch (IOException e) {
+                        Files.move(src, targetFile.toPath(),
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } else {
+                    byte[] body = request.getBody();
+                    if (body == null) {
+                        body = new byte[0];
+                    }
+                    Files.write(targetFile.toPath(), body);
                 }
-
-                Files.write(targetFile.toPath(), body);
 
                 HttpResponse response = new HttpResponse();
                 response.setStatusCode(201, "Created");
